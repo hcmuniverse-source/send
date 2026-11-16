@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HCM Send</title>
+<style>
+:root{--bg:#0e0f1a;--card:#171829;--text:#eef0ff;--mut:#9a9dc0;--acc:#5B57FF;--ok:#2ecc8f;--err:#ff6b6b}
+@media (prefers-color-scheme:light){:root{--bg:#f4f5fb;--card:#fff;--text:#14152b;--mut:#60638a}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:16px}
+.card{width:100%;max-width:460px;background:var(--card);border-radius:16px;padding:24px;box-shadow:0 8px 30px rgba(0,0,0,.25)}
+h1{margin:0 0 4px;font-size:22px}
+p.sub{margin:0 0 20px;color:var(--mut);font-size:14px}
+label{display:block;font-size:13px;color:var(--mut);margin:14px 0 6px}
+input[type=password],input[type=text]{width:100%;padding:12px;border-radius:10px;border:1px solid #3a3c63;background:transparent;color:var(--text);font-size:16px}
+.drop{border:2px dashed #4a4d7e;border-radius:12px;padding:22px;text-align:center;cursor:pointer;color:var(--mut)}
+.drop.has{border-color:var(--acc);color:var(--text)}
+button{width:100%;margin-top:18px;padding:14px;border:0;border-radius:10px;background:var(--acc);color:#fff;font-size:16px;font-weight:600;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+.bar{height:10px;background:#2a2c4d;border-radius:6px;overflow:hidden;margin-top:16px;display:none}
+.bar>div{height:100%;width:0;background:var(--acc);transition:width .15s}
+.msg{margin-top:12px;font-size:14px;min-height:18px}
+.err{color:var(--err)}.ok{color:var(--ok)}
+.link{display:none;margin-top:16px}
+.row{display:flex;gap:8px}
+.row input{flex:1;font-size:14px}
+.row button{width:auto;margin:0;padding:0 16px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Send a file</h1>
+  <p class="sub">Upload an MP3 (up to 50 MB), get a download link.</p>
+  <label for="pass">Passcode</label>
+  <input id="pass" type="password" autocomplete="current-password">
+  <label>File</label>
+  <div class="drop" id="drop">Tap to choose an audio file</div>
+  <input id="file" type="file" accept="audio/*,.mp3" hidden>
+  <button id="go" disabled>Upload</button>
+  <div class="bar" id="bar"><div id="fill"></div></div>
+  <div class="msg" id="msg"></div>
+  <div class="link" id="linkBox">
+    <label>Download link</label>
+    <div class="row"><input id="link" type="text" readonly><button id="copy">Copy</button></div>
+  </div>
+</div>
+<script>
+const FN = "https://jafnpecytlkbsntvylne.supabase.co/functions/v1/share-upload-url";
+const MAX = 50 * 1024 * 1024;
+const $ = id => document.getElementById(id);
+let file = null;
+try { $("pass").value = localStorage.getItem("hcm_send_pass") || ""; } catch (e) {}
+
+function setMsg(t, cls) { $("msg").textContent = t; $("msg").className = "msg " + (cls || ""); }
+function refresh() { $("go").disabled = !(file && $("pass").value); }
+$("drop").onclick = () => $("file").click();
+$("pass").oninput = refresh;
+$("file").onchange = e => {
+  file = e.target.files[0] || null;
+  $("drop").textContent = file ? file.name + " (" + (file.size / 1048576).toFixed(1) + " MB)" : "Tap to choose an audio file";
+  $("drop").classList.toggle("has", !!file);
+  $("linkBox").style.display = "none";
+  setMsg(file && file.size > MAX ? "File is over 50 MB." : "", "err");
+  if (file && file.size > MAX) file = null;
+  refresh();
+};
+
+$("go").onclick = async () => {
+  const pass = $("pass").value;
+  $("go").disabled = true; $("linkBox").style.display = "none";
+  setMsg("Preparing upload…");
+  try {
+    const r = await fetch(FN, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ passcode: pass, filename: file.name, contentType: file.type }) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || "Could not start upload");
+    try { localStorage.setItem("hcm_send_pass", pass); } catch (e) {}
+    await new Promise((res, rej) => {
+      const x = new XMLHttpRequest();
+      x.open("PUT", j.signedUrl);
+      x.setRequestHeader("Content-Type", file.type || "audio/mpeg");
+      x.upload.onprogress = ev => {
+        if (ev.lengthComputable) { $("bar").style.display = "block";
+          const p = Math.round(ev.loaded / ev.total * 100);
+          $("fill").style.width = p + "%"; setMsg("Uploading… " + p + "%"); }
+      };
+      x.onload = () => x.status < 300 ? res() : rej(new Error("Upload failed (" + x.status + "): " + x.responseText.slice(0, 120)));
+      x.onerror = () => rej(new Error("Network error during upload"));
+      x.send(file);
+    });
+    $("link").value = j.publicUrl;
+    $("linkBox").style.display = "block";
+    setMsg("Done. Send this link to the person.", "ok");
+  } catch (e) {
+    setMsg(e.message, "err");
+  }
+  $("go").disabled = false;
+};
+$("copy").onclick = async () => {
+  try { await navigator.clipboard.writeText($("link").value); setMsg("Link copied.", "ok"); }
+  catch (e) { $("link").select(); setMsg("Press copy on the selected link.", ""); }
+};
+</script>
+</body>
+</html>
